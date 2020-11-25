@@ -24,7 +24,7 @@ def coalesce_weights(weights):
     # a huge hack.  Issue is there is only one king position set in the factored
     # positions, but we add it's weights to the # of pieces on the board.  This
     # vastly overweights the king value.
-    w = w + weights.narrow(1, k_base + k_idx, 1)
+    w = w + weights.narrow(1, k_base + k_idx, 1) / 20.0
     if p_idx > 0:
       w = w + weights.narrow(1, p_base + p_idx - 1, 1)
     result.append(w)

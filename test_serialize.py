@@ -17,7 +17,7 @@ def test_coalesce(model, dataset):
   model.input.weight = torch.nn.Parameter(weights)
 
   stream = nnue_dataset.SparseBatchDataset(halfkp.NAME, dataset, batch_size)
-  stream_iter = iter(stream_factor)
+  stream_iter = iter(stream)
   tensors = next(stream_iter)[:4]
   print(model(*tensors))
 
