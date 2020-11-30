@@ -36,6 +36,8 @@ class NNUE(pl.LightningModule):
     self.output = nn.Linear(L3, 1)
     self.lambda_ = lambda_
 
+    self.hit_start = False
+
   def forward(self, us, them, w_in, b_in):
     w = self.input(w_in)
     b = self.input(b_in)
@@ -79,6 +81,13 @@ class NNUE(pl.LightningModule):
   def test_step(self, batch, batch_idx):
     self.step_(batch, batch_idx, 'test_loss')
 
+  def on_epoch_start(self):
+    self.hit_start = True
+    self.trainer.accelerator_backend.setup_optimizers(self)
+
   def configure_optimizers(self):
-    optimizer = ranger.Ranger(self.parameters())
+    if self.hit_start:
+      optimizer = torch.optim.SGD(self.parameters(), lr=0.1, momentum=0.0)
+    else:
+      optimizer = ranger.Ranger(self.parameters())
     return optimizer
