@@ -1,5 +1,5 @@
 import argparse
-import model as M
+import qmodel as M
 import nnue_dataset
 import nnue_bin_dataset
 import pytorch_lightning as pl
