@@ -55,6 +55,21 @@ def main():
     nnue.set_feature_set(feature_set)
     nnue.lambda_ = args.lambda_
 
+  # Quantization support
+  fuse_layers = [
+    ['input', 'input_act'],
+    ['l1', 'l1_act'],
+    ['l2', 'l2_act'],
+  ]
+  torch.quantization.fuse_modules(nnue, fuse_layers, inplace=True)
+  nnue.qconfig = torch.quantization.get_default_qconfig('fbgemm')
+  nnue = torch.quantization.prepare(nnue)
+
+  # TODO: Freeze quantization parameters after 150 epochs?
+  #nnue.apply(torch.quantization.disable_observer)
+
+  # End quantization support
+
   print("Feature set: {}".format(feature_set.name))
   print("Num real features: {}".format(feature_set.num_real_features))
   print("Num virtual features: {}".format(feature_set.num_virtual_features))
