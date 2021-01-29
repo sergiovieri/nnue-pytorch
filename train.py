@@ -65,9 +65,6 @@ def main():
   nnue.qconfig = torch.quantization.get_default_qconfig('fbgemm')
   nnue = torch.quantization.prepare(nnue)
 
-  # TODO: Freeze quantization parameters after 150 epochs?
-  #nnue.apply(torch.quantization.disable_observer)
-
   # End quantization support
 
   print("Feature set: {}".format(feature_set.name))

@@ -131,6 +131,11 @@ class NNUE(pl.LightningModule):
   def test_step(self, batch, batch_idx):
     self.step_(batch, batch_idx, 'test_loss')
 
+  def training_epoch_end(self, outputs):
+    # Freeze quantization paramaters after 150 epochs
+    if self.global_step > 150:
+      self.apply(torch.quantization.disable_observer)
+
   def configure_optimizers(self):
     # Train with a lower LR on the output layer
     LR = 1e-3
