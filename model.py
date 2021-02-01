@@ -1,3 +1,5 @@
+import math
+
 import chess
 import ranger
 import torch
@@ -28,7 +30,28 @@ class NNUE(pl.LightningModule):
     self.output = nn.Linear(L3, 1)
     self.lambda_ = lambda_
 
+    self._initialize_feature_weights()
     self._zero_virtual_feature_weights()
+    self._initialize_affine(self.l1)
+    self._initialize_affine(self.l2)
+    self._initialize_output()
+
+  def _initialize_feature_weights(self):
+    std = 0.1 / math.sqrt(30)
+    nn.init.normal_(self.input.weight, 0.0, std)
+    nn.init.uniform_(self.input.bias, 0.5, 0.5)
+
+  def _initialize_affine(self, layer):
+    fan_in, _ = nn.init._calculate_fan_in_and_fan_out(layer.weight)
+    std = 1.0 / math.sqrt(fan_in)
+    nn.init.normal_(layer.weight, 0.0, std)
+    bias = 0.5 - 0.5 * torch.sum(layer.weight, 1)
+    layer.bias = nn.Parameter(bias)
+
+  def _initialize_output(self):
+    nn.init.uniform_(self.output.bias, 0.0, 0.0)
+    std = 1.0 / math.sqrt(L3)
+    nn.init.normal_(self.output.weight, 0.0, std)
 
   '''
   We zero all virtual feature weights because during serialization to .nnue
@@ -94,7 +117,18 @@ class NNUE(pl.LightningModule):
     x = self.output(l2_)
     return x
 
+  def on_after_backward(self):
+    w = self.input.weight
+    g = w.grad
+    a = self.feature_set.features[0].get_factor_base_feature('HalfK')
+    b = self.feature_set.features[0].get_factor_base_feature('P')
+    g[:, a:b] /= 30.0
+
   def step_(self, batch, batch_idx, loss_type):
+    lim = 1.98
+    with torch.no_grad():
+      self.l1.weight.clamp_(-lim, lim)
+      self.l2.weight.clamp_(-lim, lim)
     us, them, white, black, outcome, score = batch
 
     # 600 is the kPonanzaConstant scaling factor needed to convert the training net output to a score.
@@ -133,15 +167,34 @@ class NNUE(pl.LightningModule):
 
   def configure_optimizers(self):
     # Train with a lower LR on the output layer
-    LR = 1e-3
+    LR = 1.5e-0
     train_params = [
+      # {'params': self.get_layers(lambda x: self.input == x), 'lr': LR},
+      # {'params': self.get_layers(lambda x: self.input != x), 'lr': LR / 10, 'momentum': 0.9, 'nesterov': True},
       {'params': self.get_layers(lambda x: self.output != x), 'lr': LR},
       {'params': self.get_layers(lambda x: self.output == x), 'lr': LR / 10},
+      # {'params': self.get_layers(lambda x: True), 'lr': LR},
     ]
     # increasing the eps leads to less saturated nets with a few dead neurons
-    optimizer = ranger.Ranger(train_params, betas=(.9, 0.999), eps=1.0e-7)
+    # optimizer = ranger.Ranger(train_params, betas=(.9, 0.999), eps=1.0e-7)
+    optimizer = torch.optim.SGD(train_params, lr=LR)
+
+    def get_lr(epoch):
+        # if epoch == 0:
+        #     return 0.01
+        # if epoch == 1:
+        #     return 0.1
+
+        if epoch == 0:
+            return 0.1
+
+        # return 1.0 / (10.0 ** (epoch // 1))
+
+        return 1.0
+
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, get_lr)
     # Drop learning rate after 75 epochs
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=75, gamma=0.3)
+    # scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=75, gamma=0.3)
     return [optimizer], [scheduler]
 
   def get_layers(self, filt):

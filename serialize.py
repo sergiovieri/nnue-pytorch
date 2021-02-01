@@ -201,6 +201,12 @@ def main():
 
   print('Converting %s to %s' % (args.source, args.target))
 
+  if args.source.endswith(".ckpt") and args.target.endswith(".pt"):
+    nnue = M.NNUE.load_from_checkpoint(args.source, feature_set=feature_set)
+    nnue.eval()
+    torch.save(nnue, args.target)
+    return
+
   if args.source.endswith(".pt") or args.source.endswith(".ckpt"):
     if not args.target.endswith(".nnue"):
       raise Exception("Target file must end with .nnue")
