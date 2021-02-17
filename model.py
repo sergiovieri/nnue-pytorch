@@ -6,11 +6,18 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 import pytorch_lightning as pl
+import matplotlib.pyplot as plt
 
 # 3 layer fully connected network
 L1 = 256
 L2 = 32
 L3 = 32
+
+figure_counter = 0
+data_x = []
+data_y = []
+data_a = []
+data_b = []
 
 class NNUE(pl.LightningModule):
   """
@@ -29,6 +36,12 @@ class NNUE(pl.LightningModule):
     self.l2 = nn.Linear(L2, L3)
     self.output = nn.Linear(L3, 1)
     self.lambda_ = lambda_
+    self.output_scale = nn.Linear(1, 1)
+    nn.init.uniform_(self.output_scale.weight, 1.0, 1.0)
+    nn.init.uniform_(self.output_scale.bias, 0.0, 0.0)
+    self.output_scale_outcome = nn.Linear(1, 1)
+    nn.init.uniform_(self.output_scale_outcome.weight, 1.0, 1.0)
+    nn.init.uniform_(self.output_scale_outcome.bias, 0.0, 0.0)
 
     self._initialize_feature_weights()
     self._zero_virtual_feature_weights()
@@ -43,7 +56,7 @@ class NNUE(pl.LightningModule):
 
   def _initialize_affine(self, layer):
     fan_in, _ = nn.init._calculate_fan_in_and_fan_out(layer.weight)
-    std = 1.0 / math.sqrt(fan_in)
+    std = 0.5 / math.sqrt(fan_in)
     nn.init.normal_(layer.weight, 0.0, std)
     bias = 0.5 - 0.5 * torch.sum(layer.weight, 1)
     layer.bias = nn.Parameter(bias)
@@ -134,21 +147,79 @@ class NNUE(pl.LightningModule):
     # 600 is the kPonanzaConstant scaling factor needed to convert the training net output to a score.
     # This needs to match the value used in the serializer
     nnue2score = 600
-    scaling = 361
+    scaling = 250
 
     q = self(us, them, white, black) * nnue2score / scaling
+    # q_score = self.output_scale(q)#.detach())
+    q_score = q
+    q_outcome = self.output_scale_outcome(q)
+    # q_outcome = q
     t = outcome
-    p = (score / scaling).sigmoid()
+    # magic = 1.3624 / 0.97558
+    magic = 1
+    score.clamp_(-3000, 3000)
+    # score2 = score + score.sign() * 200.
+    p = (score / scaling * magic).sigmoid()
+
+    print('{:.4f} {:.4f} {:.4f} {:.4f}'.format(
+        self.output_scale.weight.item(), self.output_scale.bias.item(),
+        self.output_scale_outcome.weight.item(), self.output_scale_outcome.bias.item(),
+    ))
+
+    global figure_counter
+    figure_counter += 1
+    if figure_counter == 100:
+      figure_counter = 0
+      data_x.extend((q_score * scaling).detach().cpu().numpy())
+      data_y.extend(score.detach().cpu().numpy())
+      data_a.extend((q_outcome * scaling).detach().cpu().numpy())
+      data_b.extend(outcome.detach().cpu().numpy())
+
+      if len(data_x) > 100000:
+        print('Save fig')
+        plt.figure(figsize=(20, 10))
+        plt.subplot(1, 2, 1)
+        plt.scatter(data_x, data_y, s=0.1)
+        plt.subplot(1, 2, 2)
+        plt.scatter(data_a, data_b, s=0.1)
+        plt.savefig('runs/run22/plot.jpg')
+        plt.close()
+        data_x.clear()
+        data_y.clear()
+        data_a.clear()
+        data_b.clear()
+
+    with torch.no_grad():
+      lambdas = torch.where(torch.logical_or(score <= -1000, score >= 1000), 0.2, self.lambda_)
+      # lambdas = self.lambda_
+      # multiplier = torch.where(score.sign() == q_score.sign(), 0.5, 1.0)
+      # multiplier *= torch.where(q_score.abs() < score.abs(), 1.0, 0.5)
+      # multiplier *= torch.where(torch.logical_and(
+      #     score.sign() == q_score.sign(),
+      #     torch.logical_and(score.abs() >= 1000, q_score.abs() >= 1000)
+      # ), 0.0, 1.0)
 
     epsilon = 1e-12
     teacher_entropy = -(p * (p + epsilon).log() + (1.0 - p) * (1.0 - p + epsilon).log())
     outcome_entropy = -(t * (t + epsilon).log() + (1.0 - t) * (1.0 - t + epsilon).log())
-    teacher_loss = -(p * F.logsigmoid(q) + (1.0 - p) * F.logsigmoid(-q))
-    outcome_loss = -(t * F.logsigmoid(q) + (1.0 - t) * F.logsigmoid(-q))
-    result  = self.lambda_ * teacher_loss    + (1.0 - self.lambda_) * outcome_loss
-    entropy = self.lambda_ * teacher_entropy + (1.0 - self.lambda_) * outcome_entropy
+    teacher_loss = -(p * F.logsigmoid(q_score) + (1.0 - p) * F.logsigmoid(-q_score))
+    outcome_loss = -(t * F.logsigmoid(q_outcome) + (1.0 - t) * F.logsigmoid(-q_outcome))
+    # teacher_loss = F.mse_loss(q_score.sigmoid(), p)
+    # outcome_loss = F.mse_loss(q_outcome.sigmoid(), t)
+
+    # teacher_loss *= multiplier
+    # teacher_entropy *= multiplier
+
+    result  = lambdas * teacher_loss    + (1.0 - lambdas) * outcome_loss
+    entropy = lambdas * teacher_entropy + (1.0 - lambdas) * outcome_entropy
     loss = result.mean() - entropy.mean()
     self.log(loss_type, loss)
+
+    # mask = torch.logical_and(-1000 < score, score < 1000)
+    # mse_loss = torch.masked_select(F.mse_loss(q_score * scaling, score, reduction='none'), mask).mean()
+    mse_loss = F.mse_loss(torch.clamp_(q_score * scaling, -1000, 1000), torch.clamp_(score, -1000, 1000))
+    self.log('mse_loss', mse_loss)
+
     return loss
 
     # MSE Loss function for debugging
@@ -167,9 +238,12 @@ class NNUE(pl.LightningModule):
 
   def configure_optimizers(self):
     # Train with a lower LR on the output layer
-    LR = 1.5e-0
+    LR = 5e-0
     train_params = [
       # {'params': self.get_layers(lambda x: self.input == x), 'lr': LR},
+      # {'params': self.get_layers(lambda x: self.l1 == x), 'lr': LR / 2},
+      # {'params': self.get_layers(lambda x: self.input != x and self.l1 != x), 'lr': LR / 10},
+      # {'params': self.get_layers(lambda x: self.input != x), 'lr': LR / 10},
       # {'params': self.get_layers(lambda x: self.input != x), 'lr': LR / 10, 'momentum': 0.9, 'nesterov': True},
       {'params': self.get_layers(lambda x: self.output != x), 'lr': LR},
       {'params': self.get_layers(lambda x: self.output == x), 'lr': LR / 10},
@@ -181,14 +255,21 @@ class NNUE(pl.LightningModule):
 
     def get_lr(epoch):
         # if epoch == 0:
-        #     return 0.01
+        #     return 0.1
         # if epoch == 1:
+        #     return 0.2
+
+        # return 0.1 * (epoch + 1)
+
+        # if epoch == 0:
         #     return 0.1
 
-        if epoch == 0:
-            return 0.1
-
         # return 1.0 / (10.0 ** (epoch // 1))
+
+        # if epoch % 10 == 8:
+        #     return 0.5
+        # if epoch % 10 == 9:
+        #     return 0.25
 
         return 1.0
 
